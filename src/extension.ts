@@ -18,26 +18,30 @@
 
 import * as extensionApi from '@podman-desktop/api';
 import { getAuthConfig } from './configuration';
-import { onDidChangeSessions, RedHatAuthenticationService, RedHatAuthenticationSession } from './authentication-service';
+import {
+  onDidChangeSessions,
+  RedHatAuthenticationService,
+  RedHatAuthenticationSession,
+} from './authentication-service';
 
 const menuItemsRegistered: extensionApi.Disposable[] = [];
 
 const SignUpMenuItem = (enabled = true) => ({
   id: 'redhat.authentication.signup',
   label: 'Sign Up',
-  enabled
+  enabled,
 });
 
 const SignInMenuItem = (enabled = true) => ({
   id: 'redhat.authentication.signin',
   label: 'Sign In',
-  enabled
+  enabled,
 });
 
-const SignOutMenuItem = (enabled = false) =>({
+const SignOutMenuItem = (enabled = false) => ({
   id: 'redhat.authentication.signout',
   label: 'Sign Out',
-  enabled
+  enabled,
 });
 
 const Separator: extensionApi.MenuItem = {
@@ -51,21 +55,20 @@ const AuthMenuItem: extensionApi.MenuItem = {
 };
 
 async function initMenu(extensionContext: extensionApi.ExtensionContext): Promise<void> {
-  AuthMenuItem.
-    submenu = [SignInMenuItem(), SignOutMenuItem(), Separator, SignUpMenuItem()];
+  AuthMenuItem.submenu = [SignInMenuItem(), SignOutMenuItem(), Separator, SignUpMenuItem()];
 
   const subscription = extensionApi.tray.registerMenuItem(AuthMenuItem);
   extensionContext.subscriptions.push(subscription);
 }
 
-let loginService:RedHatAuthenticationService;
+let loginService: RedHatAuthenticationService;
 let currentSession: RedHatAuthenticationSession;
 
 async function getAutenticatonService() {
   if (!loginService) {
     const config = await getAuthConfig();
     loginService = await RedHatAuthenticationService.build(config);
-  } 
+  }
   return loginService;
 }
 
@@ -80,48 +83,47 @@ async function getAuthService() {
 
 export async function activate(extensionContext: extensionApi.ExtensionContext): Promise<void> {
   console.log('starting extension redhat-authentication');
-  
+
   await initMenu(extensionContext);
-  
-  extensionApi.authentication.registerAuthenticationProvider(
-    'redhat.autentication-provider',
-    'Red Hat', {
-      onDidChangeSessions: onDidChangeSessions.event,
-      createSession: async function (scopes: string[]): Promise<extensionApi.AuthenticationSession> {
-        const service = await getAuthService();
-        const session = await service.createSession(scopes.sort().join(' '));
-        onDidChangeSessions.fire({added: [session]});
-        return session;
-      },
-      getSessions: async function (scopes: string[]): Promise<extensionApi.AuthenticationSession[]> {
-        const service = await getAuthService();
-        return service.getSessions(scopes)
-      },
-      removeSession: async function (sessionId: string): Promise<void> {
-        const service = await getAuthService();
-        const session = await service.removeSession(sessionId);
-        onDidChangeSessions.fire({removed: [session]});
-      }
-    });
+
+  extensionApi.authentication.registerAuthenticationProvider('redhat.autentication-provider', 'Red Hat SSO', {
+    onDidChangeSessions: onDidChangeSessions.event,
+    createSession: async function (
+      scopes: string[],
+      callback: (url: string) => extensionApi.AuthenticationDialog,
+    ): Promise<extensionApi.AuthenticationSession> {
+      const service = await getAuthService();
+      const session = await service.createSession(scopes.sort().join(' '), callback);
+      onDidChangeSessions.fire({ added: [session] });
+      return session;
+    },
+    getSessions: async function (scopes: string[]): Promise<extensionApi.AuthenticationSession[]> {
+      const service = await getAuthService();
+      return service.getSessions(scopes);
+    },
+    removeSession: async function (sessionId: string): Promise<void> {
+      const service = await getAuthService();
+      const session = await service.removeSession(sessionId);
+      onDidChangeSessions.fire({ removed: [session] });
+    },
+  });
 
   const SignInCommand = extensionApi.commands.registerCommand('redhat.authentication.signin', async () => {
-    loginService = await getAutenticatonService();
-    currentSession = await loginService.createSession('openid');
-    onDidChangeSessions.fire({added: [currentSession], removed:[], changed:[]});
-    AuthMenuItem.label = `Red Hat (${currentSession.account.label})`;
-    AuthMenuItem.
-      submenu = [SignInMenuItem(false), SignOutMenuItem(true), Separator, SignUpMenuItem()];
-    const subscription = extensionApi.tray.registerMenuItem(AuthMenuItem);
-    extensionContext.subscriptions.push(subscription);
+    extensionApi.authentication.getSession('redhat.autentication-provider', ['openid']);
+    // onDidChangeSessions.fire({added: [currentSession], removed:[], changed:[]});
+    // AuthMenuItem.label = `Red Hat (${currentSession.account.label})`;
+    // AuthMenuItem.
+    //   submenu = [SignInMenuItem(false), SignOutMenuItem(true), Separator, SignUpMenuItem()];
+    // const subscription = extensionApi.tray.registerMenuItem(AuthMenuItem);
+    // extensionContext.subscriptions.push(subscription);
   });
 
   const SignOutCommand = extensionApi.commands.registerCommand('redhat.authentication.signout', async () => {
     loginService.removeSession(currentSession.id);
-    onDidChangeSessions.fire({added: [], removed:[currentSession], changed:[]});
+    onDidChangeSessions.fire({ added: [], removed: [currentSession], changed: [] });
     currentSession = undefined;
     AuthMenuItem.label = `Red Hat`;
-    AuthMenuItem.
-      submenu = [SignInMenuItem(true), SignOutMenuItem(false), Separator, SignUpMenuItem()];
+    AuthMenuItem.submenu = [SignInMenuItem(true), SignOutMenuItem(false), Separator, SignUpMenuItem()];
     const subscription = extensionApi.tray.registerMenuItem(AuthMenuItem);
     extensionContext.subscriptions.push(subscription);
   });

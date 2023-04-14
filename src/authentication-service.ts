@@ -19,7 +19,13 @@
  *  IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  *  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *--------------------------------------------------------------------------------------------*/
-import { AuthenticationSession, window, EventEmitter, AuthenticationProviderAuthenticationSessionsChangeEvent, env, Uri } from '@podman-desktop/api';
+import {
+  AuthenticationSession,
+  window,
+  EventEmitter,
+  AuthenticationProviderAuthenticationSessionsChangeEvent,
+  AuthenticationDialog,
+} from '@podman-desktop/api';
 import { ServerResponse } from 'node:http';
 import { Client, generators, Issuer, TokenSet } from 'openid-client';
 import { createServer, startServer } from './authentication-server';
@@ -63,7 +69,7 @@ export const onDidChangeSessions = new EventEmitter<AuthenticationProviderAuthen
 
 export const REFRESH_NETWORK_FAILURE = 'Network failure';
 
-export interface RedHatAuthenticationSession extends AuthenticationSession{
+export interface RedHatAuthenticationSession extends AuthenticationSession {
   idToken: string | undefined;
   readonly id: string;
   readonly accessToken: string;
@@ -292,7 +298,10 @@ export class RedHatAuthenticationService {
     return Promise.all(matchingTokens.map(token => this.convertToSession(token)));
   }
 
-  public async createSession(scopes: string): Promise<RedHatAuthenticationSession> {
+  public async createSession(
+    scopes: string,
+    callback?: (url: string) => AuthenticationDialog,
+  ): Promise<RedHatAuthenticationSession> {
     Logger.info(`Logging in ${this.config.authUrl}...`);
 
     // eslint-disable-next-line no-async-promise-executor
@@ -303,7 +312,7 @@ export class RedHatAuthenticationService {
       try {
         const serverBase = this.config.serverConfig.externalUrl;
         const port = await startServer(this.config.serverConfig, server);
-        env.openExternal(Uri.parse(`${serverBase}:${port}/signin?nonce=${encodeURIComponent(nonce)}`));
+        const dialog = callback(`${serverBase}:${port}/signin?nonce=${encodeURIComponent(nonce)}`);
         const redirectReq = await redirectPromise;
         if ('err' in redirectReq) {
           const { err, res } = redirectReq;
@@ -338,35 +347,46 @@ export class RedHatAuthenticationService {
         redirectReq.res.writeHead(302, { Location: authUrl });
         redirectReq.res.end();
 
-        const callbackResult = await callbackPromise;
-
-        if ('err' in callbackResult) {
-          this.error(callbackResult.res, callbackResult.err);
-          throw callbackResult.err;
-        }
-        let tokenSet: TokenSet;
-        try {
-          tokenSet = await this.client.callback(redirect_uri, this.client.callbackParams(callbackResult.req), {
-            code_verifier,
-            nonce,
+        const closeDialogPromise = new Promise<void>(resolve => {
+          dialog.onDidClose(() => {
+            resolve();
           });
-        } catch (error) {
-          this.error(callbackResult.res, error);
-          throw error;
-        }
-
-        const token = this.convertToken(tokenSet!, scope);
-
-        callbackResult.res.writeHead(302, {
-          Location: `/?service=${this.config.serviceId}&login=${encodeURIComponent(token.account.label)}`,
         });
-        callbackResult.res.end();
+        const callbackResult = await Promise.race([callbackPromise, closeDialogPromise]).then(result => {
+          if (result) {
+            dialog.dispose();
+          }
+          return result;
+        });
 
-        this.setToken(token, scope);
-        Logger.info('Login successful');
-        const session = await this.convertToSession(token);
+        if (callbackResult) {
+          if ('err' in callbackResult) {
+            this.error(callbackResult.res, callbackResult.err);
+            throw callbackResult.err;
+          }
+          let tokenSet: TokenSet;
+          try {
+            tokenSet = await this.client.callback(redirect_uri, this.client.callbackParams(callbackResult.req), {
+              code_verifier,
+              nonce,
+            });
+          } catch (error) {
+            this.error(callbackResult.res, error);
+            throw error;
+          }
+          const token = this.convertToken(tokenSet!, scope);
 
-        resolve(session);
+          callbackResult.res.writeHead(302, {
+            Location: `/?service=${this.config.serviceId}&login=${encodeURIComponent(token.account.label)}`,
+          });
+          callbackResult.res.end();
+
+          this.setToken(token, scope);
+          Logger.info('Login successful');
+          const session = await this.convertToSession(token);
+
+          resolve(session);
+        }
       } catch (e: any) {
         Logger.error(e.message);
         // If the error was about starting the server, try directly hitting the login endpoint instead
@@ -381,6 +401,7 @@ export class RedHatAuthenticationService {
         reject(e.message);
       } finally {
         setTimeout(() => {
+          console.log('Login dialog closed, closing server.');
           server.close();
         }, 5000);
       }
@@ -417,7 +438,7 @@ export class RedHatAuthenticationService {
                 scope,
               );
               if (!didSucceedOnRetry) {
-                this.pollForReconnect(token.sessionId,  token.refreshToken, token.scope);
+                this.pollForReconnect(token.sessionId, token.refreshToken, token.scope);
               }
             } else {
               await this.removeSession(token.sessionId);
