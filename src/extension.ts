@@ -24,13 +24,14 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { accessSync, constants, readFileSync } from 'node:fs';
 import {
-  restartPodmanMachine,
   runRpmInstallSubscriptionManager,
   runSubscriptionManager,
   runSubscriptionManagerActivationStatus,
   runSubscriptionManagerRegister,
   runSubscriptionManagerUnregister,
   runCreateFactsFile,
+  stopPodmanMachine,
+  startPodmanMachine,
 } from './podman-cli';
 import { SubscriptionManagerClient } from '@redhat-developer/rhsm-client';
 import { isLinux } from './util';
@@ -40,6 +41,23 @@ export const TelemetryLogger = extensionApi.env.createTelemetryLogger();
 
 let authenticationServicePromise: Promise<RedHatAuthenticationService>;
 let currentSession: extensionApi.AuthenticationSession | undefined;
+
+interface SignInTelemetryData {
+  subscriptionManagerActivationIsAlreadyKeyExists?: boolean;
+  subscriptionManagerNewActivationKeySuccessfullyCreated?: boolean;
+  subscriptionManagerSubscriptionIsSuccessfullyActivated?: boolean;
+  podmanMachineStartIsSuccessful?: boolean;
+  podmanMachineStopIsSuccessful?: boolean;
+  subscriptionManagerSubscriptionIsAlreadyActivated?: boolean;
+  subscriptionManagerInstalledSuccessfully?: boolean;
+  subscriptionManageIsAlreadyInstalled?: boolean;
+  subscriptionManagerFactsFileCreatedSuccessfully?: boolean;
+  podmanVMSubscriptionManagerActivationError?: string;
+  successful: boolean;
+  registryIsAlreadyConfigured?: boolean;
+  registryServiceAccountIsAlreadyExists?: boolean;
+  configuringRedHatRegistryError?: string;
+}
 
 async function getAuthenticationService() {
   return authenticationServicePromise;
@@ -104,7 +122,7 @@ function removeRegistry(serverUrl: string = REGISTRY_REDHAT_IO): void {
 
 // TODO: add listRegistries to registry API to allow search by
 // registry URL
-function isRedHatRegistryConfigured(): boolean {
+function isRedHatRegistryConfigured(telemetryData: SignInTelemetryData): boolean {
   const pathToAuthJson = path.join(homedir(), '.config', 'containers', 'auth.json');
   let configured = false;
   try {
@@ -122,10 +140,11 @@ function isRedHatRegistryConfigured(): boolean {
   } catch (_notAccessibleError) {
     // if file is not there, ignore and return default value
   }
+  telemetryData.registryIsAlreadyConfigured = configured;
   return configured;
 }
 
-async function createOrReuseRegistryServiceAccount(): Promise<void> {
+async function createOrReuseRegistryServiceAccount(telemetryData: SignInTelemetryData): Promise<void> {
   const currentSession = await signIntoRedHatDeveloperAccount();
   const accessTokenJson = parseJwt(currentSession!.accessToken);
   const client = new ContainerRegistryAuthorizerClient({
@@ -139,7 +158,9 @@ async function createOrReuseRegistryServiceAccount(): Promise<void> {
       'podman-desktop',
       accessTokenJson.organization.id,
     );
+    telemetryData.registryServiceAccountIsAlreadyExists = true;
   } catch (err) {
+    telemetryData.registryServiceAccountIsAlreadyExists = false;
     // ignore error when there is no podman-desktop service account yet
     selectedServiceAccount = await saApiV1.createServiceAccountUsingPost1({
       name: 'podman-desktop',
@@ -151,7 +172,7 @@ async function createOrReuseRegistryServiceAccount(): Promise<void> {
   createRegistry(selectedServiceAccount!.credentials!.username!, selectedServiceAccount!.credentials!.password!);
 }
 
-async function createOrReuseActivationKey() {
+async function createOrReuseActivationKey(telemetryData: SignInTelemetryData) {
   const currentSession = await signIntoRedHatDeveloperAccount();
   const accessTokenJson = parseJwt(currentSession!.accessToken);
   const client = new SubscriptionManagerClient({
@@ -161,8 +182,10 @@ async function createOrReuseActivationKey() {
 
   try {
     await client.activationKey.showActivationKey('podman-desktop');
+    telemetryData.subscriptionManagerActivationIsAlreadyKeyExists = true;
     // podman-desktop activation key exists
   } catch (err) {
+    telemetryData.subscriptionManagerNewActivationKeySuccessfullyCreated = false;
     // ignore and continue with activation key creation
     // TODO: add check that used role and usage exists in organization
     await client.activationKey.createActivationKeys({
@@ -171,9 +194,11 @@ async function createOrReuseActivationKey() {
       usage: 'Development/Test',
       serviceLevel: 'Self-Support',
     });
+    telemetryData.subscriptionManagerNewActivationKeySuccessfullyCreated = true;
   }
 
-  await runSubscriptionManagerRegister('podman-desktop', accessTokenJson.organization.id);
+  const registerResult = await runSubscriptionManagerRegister('podman-desktop', accessTokenJson.organization.id);
+  telemetryData.subscriptionManagerSubscriptionIsSuccessfullyActivated = registerResult === 0;
 }
 
 function isPodmanMachineRunning(): boolean {
@@ -187,38 +212,40 @@ function isPodmanMachineRunning(): boolean {
   return startedPodman.length === 1;
 }
 
-async function isSubscriptionManagerInstalled(): Promise<boolean> {
+async function isSubscriptionManagerInstalled(telemetryData: SignInTelemetryData): Promise<boolean> {
   const exitCode = await runSubscriptionManager();
-  if (exitCode === undefined) {
-    throw new Error(
-      'Error running podman ssh to detect subscription-manager, please make sure podman machine is running!',
-    );
-  }
+  telemetryData.subscriptionManageIsAlreadyInstalled = exitCode === 0;
   return exitCode === 0;
 }
 
-async function installSubscriptionManger() {
+async function installSubscriptionManger(telemetryData: SignInTelemetryData) {
   const exitCode = await runRpmInstallSubscriptionManager();
-  if (exitCode === undefined) {
-    throw new Error(
-      'Error running podman to install subscription-manager, please make sure podman machine is running!',
-    );
-  }
+  telemetryData.subscriptionManagerInstalledSuccessfully = exitCode === 0;
   return exitCode === 0;
 }
 
-async function isPodmanVmSubscriptionActivated() {
+async function isPodmanVmSubscriptionActivated(telemetryData: SignInTelemetryData) {
   const exitCode = await runSubscriptionManagerActivationStatus();
-  if (exitCode === undefined) {
-    throw new Error(
-      'Error running subscription-manager in podman machine to get subscription status, please make sure podman machine is running!',
-    );
-  }
+  telemetryData.subscriptionManagerSubscriptionIsAlreadyActivated = exitCode === 0;
   return exitCode === 0;
 }
 
-async function restartPodmanVM() {
-  await restartPodmanMachine();
+async function restartPodmanMachine(telemetryData: SignInTelemetryData) {
+  const stopResult = await stopPodmanMachine();
+  const startResult = await startPodmanMachine();
+  telemetryData.podmanMachineStopIsSuccessful = stopResult === 0;
+  telemetryData.podmanMachineStartIsSuccessful = startResult === 0;
+  if (stopResult !== 0 || startResult !== 0) {
+    throw new Error('Podman machine restart failed');
+  }
+}
+
+async function createFactsFile(json: string, telemetryData: SignInTelemetryData) {
+  const createFactsResult = await runCreateFactsFile(json);
+  telemetryData.subscriptionManagerFactsFileCreatedSuccessfully = createFactsResult === 0;
+  if (createFactsResult !== 0) {
+    throw new Error('Creating subscription fact file failed');
+  }
 }
 
 async function removeSession(sessionId: string): Promise<void> {
@@ -302,7 +329,7 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
   context.subscriptions.push(providerDisposable);
 
   const SignInCommand = extensionApi.commands.registerCommand('redhat.authentication.signin', async () => {
-    const telemetryData = {
+    const telemetryData: SignInTelemetryData = {
       successful: true,
     };
 
@@ -316,14 +343,15 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
         },
         async progress => {
           // Checking if registry account for https://registry.redhat.io is already configured
-          if (!isRedHatRegistryConfigured()) {
+          if (!isRedHatRegistryConfigured(telemetryData)) {
             progress.report({ increment: 30 });
-            await createOrReuseRegistryServiceAccount();
+            await createOrReuseRegistryServiceAccount(telemetryData);
           }
         },
       )
       .then(() => false)
-      .catch((error) => {
+      .catch(error => {
+        telemetryData.configuringRedHatRegistryError = String(error);
         return true; // required to force Promise.all() call keep waiting for all not failed calls
       });
 
@@ -339,30 +367,33 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
               await extensionApi.window.showInformationMessage(
                 'Signing into a Red Hat account requires a running Podman machine, and is currently not supported on a Linux host.  Please start a Podman machine and try again.',
               );
+              throw new Error('Linux host is not supported');
             } else {
               await extensionApi.window.showInformationMessage(
                 'Signing into a Red Hat account requires a running Podman machine.  Please start one and try again.',
               );
-              throw new Error('No running podman');
+              throw new Error('No running podman machine');
             }
-            return;
           } else {
-            if (!(await isSubscriptionManagerInstalled())) {
-              await installSubscriptionManger();
-              await restartPodmanVM();
+            if (!(await isSubscriptionManagerInstalled(telemetryData))) {
+              await installSubscriptionManger(telemetryData);
+              await restartPodmanMachine(telemetryData);
             }
-            if (!(await isPodmanVmSubscriptionActivated())) {
+            if (!(await isPodmanVmSubscriptionActivated(telemetryData))) {
               const facts = {
                 supported_architectures: 'aarch64,x86_64',
               };
               await runCreateFactsFile(JSON.stringify(facts, undefined, 2));
-              await createOrReuseActivationKey();
+              await createOrReuseActivationKey(telemetryData);
             }
           }
         },
       )
-      .then(() => false)
-      .catch((error) => {
+      .then(() => {
+        return false;
+      })
+      .catch(error => {
+        telemetryData.podmanVMSubscriptionManagerActivationError = String(error);
         return true; // required to force Promise.all() call keep waiting for all not failed calls
       });
 
@@ -374,7 +405,6 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
     }
 
     TelemetryLogger.logUsage('signin', telemetryData);
-
   });
 
   const SignOutCommand = extensionApi.commands.registerCommand('redhat.authentication.signout', async () => {
