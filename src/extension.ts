@@ -34,10 +34,11 @@ import {
 } from './podman-cli';
 import { ContainerRegistryAuthorizerClient } from './rh-api/registry-authorizer';
 import { isRedHatRegistryConfigured, REGISTRY_REDHAT_IO, SubscriptionManagerClient } from './rh-api/subscription';
+import { SubscriptionManagerClientV1 } from './rh-api/subscription-v1'
 import { SSOStatusBarItem } from './status-bar-item';
 import { ExtensionTelemetryLogger as TelemetryLogger } from './telemetry';
 import { isLinux, signIntoRedHatDeveloperAccount } from './util';
-
+import fs from 'node:fs';
 interface JwtToken {
   organization: {
     id: string;
@@ -246,6 +247,25 @@ async function configureRegistryAndActivateSubscription(): Promise<void> {
           title: 'Activating Red Hat Subscription',
         },
         async () => {
+
+          const rhsmClientV1 = new SubscriptionManagerClientV1({
+            BASE: 'https://api.access.redhat.com/management/v1/',
+            TOKEN: currentSession!.accessToken
+          });
+
+          const redirectToImage = await rhsmClientV1.images.downloadImageUsingSha('1351d19fddb169ed01dc8815e9318027d27d7fe8c80e1844559ccd9c041ad9ca');
+
+          console.log('Redirected =>', redirectToImage.data);
+
+          console.log("Redirected =>", redirectToImage.data);
+          let output = fs.createWriteStream('/Users/eskimo/Temp/file-name.iso');
+          const stream = new WritableStream({
+            write(chunk) {
+              output.write(chunk);
+            },
+          });
+          redirectToImage?.data?.pipeTo(stream);
+
           const runningConnection = getConnectionForRunningPodmanMachine();
           if (!runningConnection) {
             if (isLinux()) {

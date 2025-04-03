@@ -36,7 +36,8 @@
   "scripts": {
     "generate:registry-authorizer": "npx openapi-typescript src/rh-api/registry-authorizer-schema.json -o src/rh-api/gen/registry-authorizer.d.ts",
     "generate:subscription": "npx openapi-typescript src/rh-api/subscription-schema.json -o src/rh-api/gen/subscription.d.ts",
-    "build": "pnpm generate:subscription && pnpm generate:registry-authorizer && vite build && node ./scripts/build.cjs",
+    "generate:subscription-v1": "npx openapi-typescript src/rh-api/subscription-schema-v1.json -o src/rh-api/gen/subscription-v1.d.ts",
+    "build": "pnpm generate:subscription && pnpm generate:subscription-v1 && pnpm generate:registry-authorizer && vite build && node ./scripts/build.cjs",
     "watch": "vite build -w",
     "format:check": "prettier --end-of-line auto --cache --check \"{src,types,scripts}/**/*.{ts,js}\"",
     "format:fix": "prettier --cache --write \"{src,types,scripts}/**/*.{ts,js}\"",
