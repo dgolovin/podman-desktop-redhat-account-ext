@@ -43,7 +43,7 @@ runs:
         with:
           image: ${{ inputs.imageName }}
           tags: latest ${{ inputs.extensionVersion }}
-          platforms: linux/amd64, linux/arm64
+          platforms: amd64, arm64
           containerfiles: |
             ${{inputs.imageFilePath}}
           context: .
