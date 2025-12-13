@@ -36,8 +36,8 @@ jobs:
     name: Tagging
     runs-on: ubuntu-24.04
     outputs:
-      githubTag: ${{ steps.TAG_UTIL.outputs.githubTag}}
-      extVersion: ${{ steps.TAG_UTIL.outputs.extVersion}}
+      githubTag: ${{ steps.tag.outputs.githubTag}}
+      extVersion: ${{ steps.tag.outputs.extVersion}}
       releaseId: ${{ steps.create_release.outputs.id}}
 
     steps:
@@ -46,7 +46,7 @@ jobs:
           ref: ${{ github.event.inputs.branch }}
 
       - name: Generate tag utilities
-        id: TAG_UTIL
+        id: tag
         run: |
             TAG_PATTERN=${{ github.event.inputs.version }}
             echo "githubTag=v$TAG_PATTERN" >> ${GITHUB_OUTPUT}
@@ -57,14 +57,14 @@ jobs:
           git config --local user.name ${{ github.actor }}
 
           # Add the new version in package.json file
-          #sed -i  "s#version\":\ \"\(.*\)\",#version\":\ \"${{ steps.TAG_UTIL.outputs.extVersion }}\",#g" package.json
+          #sed -i  "s#version\":\ \"\(.*\)\",#version\":\ \"${{ steps.tag.outputs.extVersion }}\",#g" package.json
           #git add package.json
 
           # commit the changes
-          #git commit -m "chore: 🥁 tagging ${{ steps.TAG_UTIL.outputs.githubTag }} 🥳"
-          echo "Tagging with ${{ steps.TAG_UTIL.outputs.githubTag }}"
-          git tag ${{ steps.TAG_UTIL.outputs.githubTag }}
-          git push origin ${{ steps.TAG_UTIL.outputs.githubTag }}
+          #git commit -m "chore: 🥁 tagging ${{ steps.tag.outputs.githubTag }} 🥳"
+          echo "Tagging with ${{ steps.tag.outputs.githubTag }}"
+          git tag ${{ steps.tag.outputs.githubTag }}
+          git push origin ${{ steps.tag.outputs.githubTag }}
 
       - name: Create Release
         id: create_release
@@ -72,19 +72,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag: ${{ steps.TAG_UTIL.outputs.githubTag }}
-          name: ${{ steps.TAG_UTIL.outputs.githubTag }}
+          tag: ${{ steps.tag.outputs.githubTag }}
+          name: ${{ steps.tag.outputs.githubTag }}
           draft: true
           prerelease: false
 
   build:
     needs: [tag]
-    uses: redhat-developer/podman-desktop-redhat-account-ext/.github/workflows/build.yaml@main
-    secrets: inherit
-    with:
-      runs-on: ubuntu-latest
-      registry: quay
-      ext-version: ${{ needs.tag.outputs.extVersion }}
+    name: Build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.githubTag }}
+      - uses: ./.github/actions/build-and-publish
+        name: Build Builder Image
+        with:
+          extensionVersion: ${{ needs.tag.outputs.extVersion }}
+          imageFilePath: ./build/ContainerFile.builder
+          imageName: ${{ github.repository}}-builder
+      - uses: ./.github/actions/build-and-publish
+        name: Build Extension Image
+        with:
+          extensionVersion: ${{ needs.tag.outputs.extVersion }}
+          imageFilePath: ./build/ContainerFile
+          imageName: ${{ github.repository}}
 
   release:
     needs: [tag, build]
