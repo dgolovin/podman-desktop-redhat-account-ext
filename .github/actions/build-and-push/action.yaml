@@ -53,7 +53,7 @@ runs:
         uses: redhat-actions/podman-login@v1
         with:
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: $GITHUB_TOKEN
           registry: ghcr.io
 
       - name: publish builder to ghcr.io

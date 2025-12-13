@@ -81,6 +81,8 @@ jobs:
     needs: [tag]
     name: Build
     runs-on: ubuntu-24.04
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
     steps:
       - uses: actions/checkout@v6
         with:
