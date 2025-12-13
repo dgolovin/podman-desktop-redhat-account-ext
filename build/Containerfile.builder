@@ -17,8 +17,6 @@
 
 FROM registry.access.redhat.com/ubi10/nodejs-22-minimal@sha256:52f5a9e3eb1191276ef576ad88142a27d4ef61317384f383534526f55761387b
 
-USER default
-
 ENV HOME=/opt/app-root
 
 WORKDIR /opt/app-root/extension-source
