@@ -36,14 +36,13 @@ outputs:
 runs:
   using: "composite"
   steps:
-
       - name: Build builder image
         id: builder-image
         uses: redhat-actions/buildah-build@v2
         with:
           image: ${{ inputs.imageName }}
           tags: latest ${{ inputs.extensionVersion }}
-          platforms: amd64, arm64
+          platforms: linux/amd64, linux/arm64
           containerfiles: |
             ${{inputs.imageFilePath}}
           context: .
