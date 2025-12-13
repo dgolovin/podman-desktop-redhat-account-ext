@@ -85,13 +85,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.tag.outputs.githubTag }}
-      - uses: ./.github/actions/build-and-publish
+      - uses: ./.github/actions/build-and-push
         name: Build Builder Image
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
           imageFilePath: ./build/ContainerFile.builder
           imageName: ${{ github.repository}}-builder
-      - uses: ./.github/actions/build-and-publish
+      - uses: ./.github/actions/build-and-push
         name: Build Extension Image
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
