@@ -91,13 +91,13 @@ jobs:
         name: Build Builder Image
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
-          imageFilePath: ./build/ContainerFile.builder
+          imageFilePath: ./build/Containerfile.builder
           imageName: ${{ github.repository}}-builder
       - uses: ./.github/actions/build-and-push
         name: Build Extension Image
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
-          imageFilePath: ./build/ContainerFile
+          imageFilePath: ./build/Containerfile
           imageName: ${{ github.repository}}
 
   release:
