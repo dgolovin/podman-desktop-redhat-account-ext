@@ -90,8 +90,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Get image name
+        env:
+          GITHUB_REPO: ${{ github.repository }}
         id: get-image-name
-        run: echo "value=${ GITHUB_REPOSITORY#*/}" >> $GITHUB_OUTPUT
+        run: echo "value=${GITHUB_REPOSITORY#*/}" >> $GITHUB_OUTPUT
       - name: Print repo name without owner
         run: echo "Image name is ${{steps.get-image-name.outputs.value}}"
   release:
