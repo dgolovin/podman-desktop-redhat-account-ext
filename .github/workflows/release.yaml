@@ -137,8 +137,6 @@ jobs:
     needs: [tag, builder-image]
     name: Build
     runs-on: ubuntu-24.04
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
     steps:
       - name: Install qemu dependency
         run: |
@@ -149,12 +147,16 @@ jobs:
           ref: ${{ needs.tag.outputs.githubTag }}
       - uses: ./.github/actions/build-and-push
         name: Build Builder Image
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
           imageFilePath: ./build/Containerfile.builder
           imageName: ${{ github.repository}}-builder
       - uses: ./.github/actions/build-and-push
         name: Build Extension Image
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
           imageFilePath: ./build/Containerfile
