@@ -29,6 +29,9 @@ inputs:
     description: 'Image name without tag'
     required: true
     default: ${{ github.repository }}
+  githubToken:
+    description: 'secrets.GITHUB_TOKEN'
+    required: true
 outputs:
   random-number:
     description: "Random number"
