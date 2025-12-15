@@ -84,57 +84,8 @@ jobs:
           name: ${{ steps.tag.outputs.githubTag }}
           draft: true
           prerelease: false
-
-  builder-image:
-    needs: tag
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.tag.outputs.githubTag }}
-
-      - name: Install qemu dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-static
-
-      - name: build builder image
-        id: builder-image
-        uses: redhat-actions/buildah-build@v2
-        with:
-          image: podman-desktop-redhat-account-ext-builder
-          tags: latest ${{ needs.tag.outputs.extVersion }}
-          platforms: linux/amd64, linux/arm64
-          containerfiles: |
-            build/Containerfile.builder
-          context: .
-          oci: true
-
-      - name: Log in to ghcr.io
-        uses: redhat-actions/podman-login@v1
-        with:
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          registry: ghcr.io
-
-      - name: publish builder to ghcr.io
-        id: push-to-ghcr
-        uses: redhat-actions/push-to-registry@v2
-        with:
-          image: ${{ steps.builder-image.outputs.image }}
-          tags: ${{ steps.builder-image.outputs.tags }}
-          registry: ghcr.io/${{ github.repository_owner }}
-
-      - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/podman-desktop-redhat-account-ext-builder
-          subject-digest: ${{ steps.push-to-ghcr.outputs.digest }}
-          push-to-registry: true
-    
-
   build:
-    needs: [tag, builder-image]
+    needs: [tag]
     name: Build
     runs-on: ubuntu-24.04
     steps:
