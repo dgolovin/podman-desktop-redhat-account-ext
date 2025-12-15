@@ -28,7 +28,7 @@ inputs:
   imageName:
     description: 'Image name without tag'
     required: true
-    default: ${{ github.repository }}
+    default: ${{ github.event.repository.name }}
   githubToken:
     description: 'secrets.GITHUB_TOKEN'
     required: true
