@@ -96,19 +96,22 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.tag.outputs.githubTag }}
+      - name: Get image name
+        id: get-repo-name
+        run: echo "repoName=${ ${{ github.repository }}#*/}" >> $GITHUB_OUTPUT
       - uses: ./.github/actions/build-and-push
         name: Build Builder Image
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
           imageFilePath: ./build/Containerfile.builder
-          imageName: ${{ github.repository}}-builder
+          imageName: ${{ steps.get-repo-name.outputs.repoName }}-builder
           githubToken: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.github/actions/build-and-push
         name: Build Extension Image
         with:
           extensionVersion: ${{ needs.tag.outputs.extVersion }}
           imageFilePath: ./build/Containerfile
-          imageName: ${{ github.repository}}
+          imageName: ${{ steps.get-repo-name.outputs.repoName }}
           githubToken: ${{ secrets.GITHUB_TOKEN }}
   release:
     needs: [tag, build]
