@@ -18,15 +18,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 
-import type {
-  AuthenticationGetSessionOptions,
-  AuthenticationSession,
-  ExtensionContext,
-  ProviderContainerConnection,
-} from '@podman-desktop/api';
+import type { AuthenticationSession, ExtensionContext, ProviderContainerConnection } from '@podman-desktop/api';
 import { authentication, commands, env, navigation, registry, window } from '@podman-desktop/api';
 import { afterEach, beforeEach, describe, expect, suite, test, vi } from 'vitest';
 
+import { RedHatAuthenticationService } from './authentication-service';
 import * as extension from './extension';
 import * as podmanCli from './podman-cli';
 import { AccountManagementV1 } from './rh-api/rhaccm-client';
@@ -35,6 +31,16 @@ import { ExtensionTelemetryLogger } from './telemetry';
 import * as util from './util';
 
 vi.mock('@podman-desktop/api');
+// The real service runs an OIDC flow, so its static factory is replaced with a
+// stub. The factory body executes at import time (the declaration is only
+// hoisted), so vi.fn() can be created there without vi.hoisted.
+vi.mock(import('./authentication-service'), async importOriginal => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    RedHatAuthenticationService: { build: vi.fn() } as unknown as typeof actual.RedHatAuthenticationService,
+  };
+});
 vi.mock(import('./rh-api/rhaccm-client'));
 vi.mock(import('./rh-api/subscription'));
 
@@ -79,8 +85,14 @@ const fakeSession: AuthenticationSession = {
 };
 
 type CommandHandler = (...args: any[]) => Promise<any>;
+interface CapturedProvider {
+  createSession: (scopes: string[]) => Promise<AuthenticationSession>;
+  getSessions: (scopes: string[]) => Promise<AuthenticationSession[]>;
+  removeSession: (sessionId: string) => Promise<void>;
+}
 let capturedCommands: Record<string, CommandHandler> = {};
-let notificationCallback: (event: any) => Promise<any>;
+let capturedProvider: CapturedProvider | undefined;
+let fakeService: RedHatAuthenticationService;
 
 function setupBasicMocks(options?: {
   sessionAvailable?: boolean;
@@ -100,41 +112,63 @@ function setupBasicMocks(options?: {
   vi.spyOn(podmanCli, 'getConnectionForRunningPodmanMachine').mockReturnValue(connection);
   vi.spyOn(ExtensionTelemetryLogger, 'logUsage').mockImplementation(() => {});
   vi.spyOn(ExtensionTelemetryLogger, 'logError').mockImplementation(() => {});
+  // Activation kicks off registry/subscription work in the background when a
+  // stored session exists; keep those helpers inert so nothing leaks out.
+  vi.spyOn(podmanCli, 'runSubscriptionManager').mockResolvedValue(0);
+  vi.spyOn(podmanCli, 'runSubscriptionManagerActivationStatus').mockResolvedValue(0);
+  vi.spyOn(podmanCli, 'runSubscriptionManagerUnregister').mockResolvedValue(undefined);
+  vi.spyOn(podmanCli, 'runCreateFactsFile').mockResolvedValue(undefined);
+  vi.spyOn(podmanCli, 'runSubscriptionManagerRegister').mockResolvedValue(undefined);
 
-  vi.mocked(authentication.onDidChangeSessions).mockImplementation((callback: (event: any) => Promise<any>) => {
-    notificationCallback = callback;
-    return { dispose: vi.fn() };
-  });
+  vi.mocked(authentication.getSession).mockResolvedValue(sessionAvailable ? fakeSession : undefined);
 
-  let sessionReturned = false;
-  vi.mocked(authentication.getSession).mockImplementation(
-    async (
-      _p1: string,
-      _p2: string[],
-      options: AuthenticationGetSessionOptions | undefined,
-    ): Promise<AuthenticationSession | undefined> => {
-      if (!sessionAvailable) return undefined;
-      if (sessionReturned) return fakeSession;
-      if (options?.createIfNone) {
-        sessionReturned = true;
-        await notificationCallback?.({
-          provider: { id: 'redhat.authentication-provider' },
-        });
-        return fakeSession;
-      }
-      return undefined;
-    },
-  );
+  fakeService = {
+    initialize: vi.fn().mockResolvedValue(undefined),
+    getSessions: vi.fn().mockResolvedValue(sessionAvailable ? [fakeSession] : []),
+    createSession: vi.fn().mockResolvedValue(fakeSession),
+    removeSession: vi.fn().mockResolvedValue(fakeSession),
+    dispose: vi.fn(),
+  } as unknown as RedHatAuthenticationService;
+  vi.mocked(RedHatAuthenticationService.build).mockResolvedValue(fakeService);
 
   vi.mocked(commands.registerCommand).mockImplementation((commandId: string, commandFunction: CommandHandler) => {
     capturedCommands[commandId] = commandFunction;
     return { dispose: vi.fn() };
   });
+
+  capturedProvider = undefined;
+  vi.mocked(authentication.registerAuthenticationProvider).mockImplementation((_id, _label, provider: any) => {
+    capturedProvider = provider;
+    return { dispose: vi.fn() };
+  });
+}
+
+// Let the fire-and-forget registry/subscription work triggered by sign-in finish.
+async function flushPromises(): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
+
+// Activate the extension and sign in the same way the host does: through the
+// authentication provider, then wait for the background activation workflow.
+async function activateAndSignIn(): Promise<void> {
+  await extension.activate(createExtContext());
+  await flushPromises();
+  await capturedProvider!.createSession([]);
+  await flushPromises();
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
   capturedCommands = {};
+  capturedProvider = undefined;
+  // Safe default: any build() left over from a previous test still resolves.
+  vi.mocked(RedHatAuthenticationService.build).mockResolvedValue({
+    initialize: vi.fn().mockResolvedValue(undefined),
+    getSessions: vi.fn().mockResolvedValue([]),
+    dispose: vi.fn(),
+  } as unknown as RedHatAuthenticationService);
 });
 
 afterEach(() => {
@@ -144,13 +178,13 @@ afterEach(() => {
 suite('extension activation', () => {
   test('register commands declared in package.json', async () => {
     await extension.activate(createExtContext());
+    await flushPromises();
     expect(commands.registerCommand).toHaveBeenCalledTimes(5);
     expect(commands.registerCommand).toHaveBeenCalledWith('redhat.authentication.signin', expect.anything());
     expect(commands.registerCommand).toHaveBeenCalledWith('redhat.authentication.navigate.settings', expect.anything());
     expect(commands.registerCommand).toHaveBeenCalledWith('redhat.authentication.signout', expect.anything());
     expect(commands.registerCommand).toHaveBeenCalledWith('redhat.authentication.signup', expect.anything());
     expect(commands.registerCommand).toHaveBeenCalledWith('redhat.authentication.isSignedIn', expect.anything());
-    expect(authentication.onDidChangeSessions).toHaveBeenCalled();
   });
 });
 
@@ -164,64 +198,13 @@ suite('deactivate', () => {
 
 suite('signin command telemetry reports', () => {
   test('unsuccessful login when podman machine is not running on windows or darwin', async () => {
-    vi.spyOn(util, 'isLinux').mockReturnValue(false);
-
-    const logSpy = vi.spyOn(ExtensionTelemetryLogger, 'logUsage').mockImplementation(() => {
-      return;
-    });
-    let notificationCallback: (event: any) => Promise<any>;
-    let session: AuthenticationSession;
-    vi.mocked(authentication.onDidChangeSessions).mockImplementation((callback: (event: any) => Promise<any>) => {
-      notificationCallback = callback;
-      return {
-        dispose: vi.fn(),
-      };
-    });
-    vi.mocked(authentication.getSession).mockImplementation(
-      async (
-        _p1: string,
-        _p2: string[],
-        options: AuthenticationGetSessionOptions | undefined,
-      ): Promise<AuthenticationSession | undefined> => {
-        if (session) {
-          return Promise.resolve(session);
-        }
-        if (options?.createIfNone) {
-          session = {
-            id: '1',
-            accessToken: 'token',
-            scopes: ['scope1', 'scope2'],
-            account: {
-              id: 'accountId',
-              label: 'label',
-            },
-          };
-          await notificationCallback({
-            provider: {
-              id: 'redhat.authentication-provider',
-            },
-          });
-        }
-      },
-    );
-    let commandFunctionCopy: () => Promise<void>;
-    vi.mocked(commands.registerCommand).mockImplementation(
-      (commandId: string, commandFunction: () => Promise<void>) => {
-        if (commandId === 'redhat.authentication.signin') {
-          commandFunctionCopy = commandFunction;
-        }
-        return {
-          dispose: vi.fn(),
-        };
-      },
-    );
-    vi.spyOn(util, 'isRedHatRegistryConfigured').mockResolvedValue(true);
+    setupBasicMocks({ isLinux: false, registryConfigured: true });
+    const logSpy = vi.spyOn(ExtensionTelemetryLogger, 'logUsage').mockImplementation(() => {});
     vi.spyOn(podmanCli, 'getConnectionForRunningPodmanMachine').mockReturnValue(undefined);
-    await extension.activate(createExtContext());
-    expect(commandFunctionCopy!).toBeDefined();
-    await commandFunctionCopy!();
-    expect(authentication.onDidChangeSessions).toHaveBeenCalled();
-    expect(logSpy).calledWith('signin', {
+
+    await activateAndSignIn();
+
+    expect(logSpy).toHaveBeenCalledWith('signin', {
       successful: false,
       error: 'Error: No running podman',
       errorIn: 'subscription-activation',
@@ -231,9 +214,7 @@ suite('signin command telemetry reports', () => {
   test('unsuccessful login shows Linux-specific message on Linux', async () => {
     setupBasicMocks({ isLinux: true, connection: undefined, registryConfigured: true });
 
-    await extension.activate(createExtContext());
-    expect(capturedCommands['redhat.authentication.signin']).toBeDefined();
-    await capturedCommands['redhat.authentication.signin']();
+    await activateAndSignIn();
 
     expect(window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('not supported on a Linux host'),
@@ -253,8 +234,7 @@ suite('signin command telemetry reports', () => {
     vi.spyOn(podmanCli, 'runSubscriptionManager').mockResolvedValue(0);
     vi.spyOn(podmanCli, 'runSubscriptionManagerActivationStatus').mockResolvedValue(0);
 
-    await extension.activate(createExtContext());
-    await capturedCommands['redhat.authentication.signin']();
+    await activateAndSignIn();
 
     expect(mockGetAccessToken).toHaveBeenCalled();
     expect(registry.registerRegistry).toHaveBeenCalledWith(
@@ -271,8 +251,7 @@ suite('signin command telemetry reports', () => {
     vi.spyOn(podmanCli, 'runSubscriptionManager').mockResolvedValue(0);
     vi.spyOn(podmanCli, 'runSubscriptionManagerActivationStatus').mockResolvedValue(0);
 
-    await extension.activate(createExtContext());
-    await capturedCommands['redhat.authentication.signin']();
+    await activateAndSignIn();
 
     expect(AccountManagementV1).not.toHaveBeenCalled();
   });
@@ -285,8 +264,7 @@ suite('signin command telemetry reports', () => {
     vi.spyOn(podmanCli, 'runStartPodmanMachine').mockResolvedValue(undefined);
     vi.spyOn(podmanCli, 'runSubscriptionManagerActivationStatus').mockResolvedValue(0);
 
-    await extension.activate(createExtContext());
-    await capturedCommands['redhat.authentication.signin']();
+    await activateAndSignIn();
 
     expect(podmanCli.runRpmInstallSubscriptionManager).toHaveBeenCalledWith(fakeConnection);
     expect(podmanCli.runStopPodmanMachine).toHaveBeenCalledWith(fakeConnection);
@@ -312,8 +290,7 @@ suite('signin command telemetry reports', () => {
       } as any;
     });
 
-    await extension.activate(createExtContext());
-    await capturedCommands['redhat.authentication.signin']();
+    await activateAndSignIn();
 
     expect(podmanCli.runCreateFactsFile).toHaveBeenCalledWith(fakeConnection, expect.stringContaining('aarch64'));
     expect(mockCreateActivationKeys).toHaveBeenCalledWith(expect.objectContaining({ name: 'podman-desktop' }));
@@ -339,18 +316,18 @@ suite('signin command telemetry reports', () => {
       } as any;
     });
 
-    await extension.activate(createExtContext());
-    await capturedCommands['redhat.authentication.signin']();
+    await activateAndSignIn();
 
     expect(mockCreateActivationKeys).not.toHaveBeenCalled();
     expect(podmanCli.runSubscriptionManagerRegister).toHaveBeenCalled();
   });
 
-  test('reports sign-in telemetry error when signIntoRedHatDeveloperAccount throws', async () => {
+  test('reports sign-in telemetry error when creating the session throws', async () => {
     setupBasicMocks({ sessionAvailable: false });
-    vi.mocked(authentication.getSession).mockRejectedValue(new Error('SSO failure'));
+    vi.mocked(fakeService.createSession).mockRejectedValue(new Error('SSO failure'));
 
     await extension.activate(createExtContext());
+    await flushPromises();
     await capturedCommands['redhat.authentication.signin']();
 
     expect(ExtensionTelemetryLogger.logUsage).toHaveBeenCalledWith(
@@ -370,8 +347,7 @@ describe('signout command', () => {
     vi.spyOn(podmanCli, 'runSubscriptionManagerActivationStatus').mockResolvedValue(0);
     vi.spyOn(util, 'isRedHatRegistryConfigured').mockReturnValue(true);
 
-    await extension.activate(createExtContext());
-    await capturedCommands['redhat.authentication.signin']();
+    await activateAndSignIn();
     await capturedCommands['redhat.authentication.signout']();
 
     expect(ExtensionTelemetryLogger.logUsage).toHaveBeenCalledWith('signout');
@@ -383,6 +359,7 @@ describe('signup command', () => {
     setupBasicMocks();
 
     await extension.activate(createExtContext());
+    await flushPromises();
     await capturedCommands['redhat.authentication.signup']();
 
     expect(env.openExternal).toHaveBeenCalled();
@@ -394,6 +371,7 @@ describe('isSignedIn command', () => {
     setupBasicMocks();
 
     await extension.activate(createExtContext());
+    await flushPromises();
     await capturedCommands['redhat.authentication.isSignedIn']();
 
     expect(commands.registerCommand).toHaveBeenCalledWith('redhat.authentication.isSignedIn', expect.anything());
@@ -405,6 +383,7 @@ describe('navigate to settings command', () => {
     setupBasicMocks();
 
     await extension.activate(createExtContext());
+    await flushPromises();
     await capturedCommands['redhat.authentication.navigate.settings']();
 
     expect(navigation.navigateToAuthentication).toHaveBeenCalled();
