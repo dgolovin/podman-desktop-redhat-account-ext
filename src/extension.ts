@@ -254,6 +254,7 @@ async function configureRegistryAndActivateSubscription(): Promise<void> {
 
     if (!telemetryData.successful && currentSession?.id) {
       await removeSession(currentSession.id); // if at least one fail, remove session
+      currentSession = undefined;
     }
   }
   TelemetryLogger.logUsage('signin', telemetryData);
@@ -288,6 +289,22 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
         // eslint-disable-next-line sonarjs/no-alphabetical-sort
         const session = await service.createSession([...scopes].sort().join(' '));
         onDidChangeSessions.fire({ added: [session] });
+        if (!currentSession && session) {
+          statusBarItem.logInAs(session.account.label);
+          configureRegistryAndActivateSubscription()
+            .then(() => {
+              if (!currentSession) {
+                statusBarItem.logOut();
+              }
+            })
+            .catch(e => {
+              console.log('Unexpected error:', String(e));
+            });
+        }
+        currentSession = session;
+        if (!session) {
+          statusBarItem.logOut();
+        }
         return session;
       },
       getSessions: async function (scopes: string[]): Promise<extensionApi.AuthenticationSession[]> {
@@ -309,21 +326,6 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
     extensionApi.context.setValue('signedInToSSO', sessions.length > 0, 'onboarding');
   });
 
-  const onDidChangeSessionDisposable = extensionApi.authentication.onDidChangeSessions(async e => {
-    if (e.provider.id === 'redhat.authentication-provider') {
-      const newSession = await signIntoRedHatDeveloperAccount(false);
-      if (!currentSession && newSession) {
-        currentSession = newSession;
-        statusBarItem.logInAs(newSession.account.label);
-        return configureRegistryAndActivateSubscription();
-      }
-      currentSession = newSession;
-      if (!newSession) {
-        statusBarItem.logOut();
-      }
-    }
-  });
-
   signIntoRedHatDeveloperAccount(false).catch(console.log);
 
   context.subscriptions.push(providerDisposable);
@@ -334,8 +336,10 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
     };
 
     try {
-      const session = await signIntoRedHatDeveloperAccount(true); //for the use case when user logged out, vm activated and registry configured
-      extensionApi.context.setValue('signedInToSSO', session !== undefined, 'onboarding');
+      const service = await getAuthenticationService();
+      const session = await service.createSession('');
+      onDidChangeSessions.fire({ added: [session] });
+      extensionApi.context.setValue('signedInToSSO', true, 'onboarding');
     } catch (err) {
       telemetryData.errorIn = 'sign-in';
       telemetryData.error = String(err);
@@ -364,14 +368,7 @@ export async function activate(context: extensionApi.ExtensionContext): Promise<
     return extensionApi.navigation.navigateToAuthentication();
   });
 
-  context.subscriptions.push(
-    SignInCommand,
-    SignOutCommand,
-    SignUpCommand,
-    isSignedInCommand,
-    onDidChangeSessionDisposable,
-    GotoAuthCommand,
-  );
+  context.subscriptions.push(SignInCommand, SignOutCommand, SignUpCommand, isSignedInCommand, GotoAuthCommand);
 }
 
 export function deactivate(): void {
